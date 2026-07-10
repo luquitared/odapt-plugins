@@ -252,6 +252,38 @@ def main():
         else:
             out = api("PATCH", f"/apps/{app_id}", updates)
 
+    elif cmd == "presigners":
+        out = api("GET", "/presigners")
+
+    elif cmd == "presigner-create":
+        body = {
+            "name": flags.get("name") or die("--name required"),
+            "bucket": flags.get("bucket") or die("--bucket required"),
+            "provider": flags.get("provider", "s3"),
+            "region": flags.get("region", "us-east-1"),
+            "key_prefix": flags.get("prefix", ""),
+            "max_expires_seconds": int(flags.get("max_expires", "3600")),
+            "access_key_id": flags.get("access_key_id") or os.environ.get("PRESIGN_ACCESS_KEY_ID") or die("--access-key-id or PRESIGN_ACCESS_KEY_ID required"),
+            "secret_access_key": flags.get("secret_access_key") or os.environ.get("PRESIGN_SECRET_ACCESS_KEY") or die("--secret-access-key or PRESIGN_SECRET_ACCESS_KEY required"),
+        }
+        if flags.get("endpoint"):
+            body["endpoint"] = flags["endpoint"]
+        if flags.get("methods"):
+            body["allowed_methods"] = [m.strip().upper() for m in flags["methods"].split(",")]
+        out = api("POST", "/presigners", body)
+
+    elif cmd == "presigner-delete":
+        out = api("DELETE", f"/presigners/{args[0]}")
+
+    elif cmd == "presign":
+        body = {"key": flags.get("key") or (args[1] if len(args) > 1 else None) or die("--key required"),
+                "method": flags.get("method", "PUT")}
+        if flags.get("expires"):
+            body["expires_in"] = int(flags["expires"])
+        if flags.get("content_type"):
+            body["content_type"] = flags["content_type"]
+        out = api("POST", f"/presigners/{args[0]}/presign", body)
+
     elif cmd == "shares":
         out = api("GET", f"/apps/{args[0]}/shares")
 
