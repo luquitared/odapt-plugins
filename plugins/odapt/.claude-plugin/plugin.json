@@ -1,0 +1,9 @@
+{
+  "name": "odapt",
+  "description": "Build, publish, and manage Odapt apps from Claude Code: setup, publish, configure visibility/sharing, pull app source.",
+  "author": {
+    "name": "Odapt"
+  },
+  "homepage": "https://odapt.ai",
+  "license": "MIT"
+}
