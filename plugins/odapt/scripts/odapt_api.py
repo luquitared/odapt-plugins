@@ -259,7 +259,23 @@ def main():
             spec = json.loads(spec)
         outdir = Path(flags.get("dir", "."))
         written = spec_to_files(spec or {}, outdir)
-        manifest = {"app_id": int(app_id), "build_id": int(build_id), "base_url": CFG["base_url"]}
+        # Round-trip a full manifest (no build_id — builds are server state).
+        app = api("GET", f"/apps/{app_id}")["app"]
+        manifest = {
+            "app_id": int(app_id),
+            "name": app.get("app_name"),
+            "description": app.get("description") or "",
+            "access": {"public": bool(app.get("public")),
+                       "requires_login": bool(app.get("requires_login"))},
+        }
+        if isinstance(spec, dict) and spec.get("entry"):
+            manifest["entry"] = spec["entry"]
+        if isinstance(spec, dict) and spec.get("files"):
+            for path, content in spec["files"].items():
+                fp = outdir / path.lstrip("/")
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_text(content)
+                written.append(str(fp))
         (outdir / "odapt.json").write_text(json.dumps(manifest, indent=2))
         out = {"pulled": written, "manifest": str(outdir / "odapt.json")}
 
@@ -286,38 +302,53 @@ def main():
                "message": out.get("message")}
 
     elif cmd == "deploy":
-        # One idempotent verb: create app if needed, push the directory, publish.
+        # One atomic call: the folder (file map + odapt.json manifest) goes up,
+        # the server creates/updates the app, snapshots a new build, and
+        # returns the live URL. build_id never lives in the manifest.
         src = Path(flags.get("dir", "."))
         mf = src / "odapt.json"
         manifest = json.loads(mf.read_text()) if mf.exists() else {}
-        app_id = (args[0] if args else None) or flags.get("app") or manifest.get("app_id")
-        if not app_id:
-            name = flags.get("name") or src.resolve().name
-            created = create_app_with_build(name, flags.get("description", ""),
-                                            as_bool(flags.get("public", CFG.get("defaults", {}).get("public", False))))
-            app_id = created["app_id"]
-        build_id = manifest.get("build_id") or ensure_build(app_id)
-        cur = api("GET", f"/apps/{app_id}/builds/{build_id}")
-        b = cur.get("builds") or cur.get("build") or cur
-        if isinstance(b, list):
-            b = b[0]
-        spec = b.get("app_spec")
-        if isinstance(spec, str):
-            spec = json.loads(spec)
-        new_spec = files_to_spec(src, spec)
-        api("PATCH", f"/apps/{app_id}/builds/{build_id}", {"app_spec": new_spec})
-        updates = {"deployment_build_id": int(build_id)}
+        manifest.pop("build_id", None)   # legacy field; builds are server state
+        manifest.pop("base_url", None)
+
+        # CLI flags update the manifest (the manifest is the source of truth).
+        if flags.get("name"): manifest["name"] = flags["name"]
+        if flags.get("description"): manifest["description"] = flags["description"]
+        access = manifest.setdefault("access", {})
         defaults = CFG.get("defaults", {})
         for flag_key, col in (("public", "public"), ("requires_login", "requires_login")):
-            val = flags.get(flag_key, defaults.get(col))
+            val = flags.get(flag_key, None if col in access else defaults.get(col))
             if val is not None:
-                updates[col] = as_bool(val)
-        api("PATCH", f"/apps/{app_id}", updates)
-        mf.write_text(json.dumps({"app_id": int(app_id), "build_id": int(build_id),
-                                  "base_url": CFG["base_url"]}, indent=2))
-        out = {"deployed": True, "app_id": int(app_id), "build_id": int(build_id),
-               "views": sorted((new_spec.get("views") or {}).keys()),
-               "url": f"{CFG['base_url']}/app?app_id={app_id}"}
+                access[col] = as_bool(val)
+        if not manifest.get("name"):
+            manifest["name"] = src.resolve().name
+
+        app_id = (args[0] if args else None) or flags.get("app") or manifest.get("app_id")
+
+        deployable = {".html", ".htm", ".css", ".js", ".mjs", ".json", ".svg",
+                      ".txt", ".xml", ".webmanifest", ".map"}
+        skip_dirs = {".git", "node_modules", "__pycache__", ".odapt"}
+        file_map = {}
+        for p in sorted(src.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(src).as_posix()
+            if any(part in skip_dirs or part.startswith(".") for part in rel.split("/")):
+                continue
+            if rel == "odapt.json" or p.suffix.lower() not in deployable:
+                continue
+            if p.stat().st_size > 2 * 1024 * 1024:
+                print(json.dumps({"skipped_large_file": rel}), file=sys.stderr)
+                continue
+            file_map[rel] = p.read_text()
+        file_map["odapt.json"] = json.dumps(manifest, indent=2)
+
+        path = f"/apps/{app_id}/deploy" if app_id else "/apps/deploy"
+        out = api("POST", path, {"files": file_map})
+
+        # Write back the manifest with the (possibly new) app identity.
+        manifest["app_id"] = out["app_id"]
+        mf.write_text(json.dumps(manifest, indent=2))
 
     elif cmd == "publish":
         app_id = args[0]

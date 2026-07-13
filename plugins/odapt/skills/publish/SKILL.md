@@ -20,15 +20,16 @@ stdout; errors on stderr). If any call fails with a missing/invalid key, run
 
 ## Steps
 
-1. **Push local changes** only if the directory contains the app source
-   (`odapt.json` present, or user asked to publish "this folder"):
+1. **Publishing a local folder — use the one atomic verb:**
    ```bash
-   python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odapt_api.py push <app_id> --dir .
+   python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odapt_api.py deploy [app_id] --dir . [--name N] [--public ...] [--requires-login ...]
    ```
-   Skip pushing when the user is publishing an app they built in the hosted
-   editor (no local files) — publishing works on the server-side build as-is.
-2. **Publish** (points the deployment at the build and applies access flags;
-   omitted flags fall back to `~/.odapt/config.json` defaults):
+   `deploy` reads/writes the `odapt.json` manifest (identity + settings;
+   flags update it), uploads every deployable file (html at root = pages,
+   `partials/`, plus css/js/svg/json assets), creates the app on first run,
+   snapshots a new build, and prints the live URL. The manifest never
+   contains a build_id — builds are server state returned by the deploy.
+2. **Publishing an editor-built app (no local files):**
    ```bash
    python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odapt_api.py publish <app_id> [--public true|false] [--requires-login true|false]
    ```
