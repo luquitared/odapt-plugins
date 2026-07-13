@@ -10,12 +10,20 @@ Link this machine to an Odapt account and record publish defaults in
 
 ## Steps
 
-1. **Get an API key.** If the user passed one as an argument, use it. If
-   `ODAPT_API_KEY` is set in the environment, prefer that. Otherwise tell the
-   user: create a key at **https://odapt.ai/developers** (API keys section)
-   and paste it here — then wait for them to provide it. Keys start with
-   `sk-`.
-2. **Validate it** before saving:
+1. **Preferred: browser link (no key handling).** Run:
+   ```bash
+   python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odapt_api.py login
+   ```
+   It prints a `verification_url` + code on stderr, then blocks polling (up
+   to 10 min). Show the user the URL and code and tell them to open it,
+   confirm they're logged in, and click **Approve access**. On approval the
+   command saves the key to `~/.odapt/config.json` (mode 600) itself and
+   prints the linked account email — the key never appears in chat. Then
+   skip to step 3.
+
+   Fallback — manual key: if the user passed a key as an argument or set
+   `ODAPT_API_KEY`, use that instead (keys start with `sk-`).
+2. **(Manual path only) Validate before saving:**
    ```bash
    ODAPT_API_KEY=<key> python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odapt_api.py whoami
    ```

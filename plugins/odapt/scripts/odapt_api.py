@@ -165,7 +165,35 @@ def main():
     cmd, argv = sys.argv[1], sys.argv[2:]
     flags, args = parse_flags(argv)
 
-    if cmd == "whoami":
+    if cmd == "login":
+        # Device-link flow: open browser, approve, key lands in ~/.odapt/config.json.
+        import time
+        start = req("POST", CFG["auth_url"] + "/cli-auth/start", {}, auth=False)
+        print(json.dumps({"open_this_url": start["verification_url"],
+                          "code": start["user_code"],
+                          "expires_in": start["expires_in"]}), file=sys.stderr)
+        deadline = time.time() + start.get("expires_in", 600)
+        key = None
+        while time.time() < deadline:
+            time.sleep(start.get("interval", 3))
+            res = req("POST", CFG["auth_url"] + "/cli-auth/poll",
+                      {"poll_token": start["poll_token"]}, auth=False)
+            if res.get("status") == "approved":
+                key = res["api_key"]
+                break
+        if not key:
+            die("Login timed out — code expired before approval.")
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        cfg = dict(CFG)
+        cfg["api_key"] = key
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+        os.chmod(CONFIG_PATH, 0o600)
+        global API_KEY
+        API_KEY = key
+        me = whoami()
+        out = {"logged_in": True, "email": me.get("email"), "config": str(CONFIG_PATH)}
+
+    elif cmd == "whoami":
         out = whoami()
 
     elif cmd == "apps":
