@@ -8,7 +8,10 @@ Commands:
   whoami                                   validate key, print user
   apps                                     list your apps
   app <app_id>                             app details (+ builds)
-  create --name N [--description D]        create app (+ first build)
+  create --name N [--description D] [--public true|false]
+                                           create app + first build + link
+  deploy [app_id] [--dir DIR] [--name N] [--public ...] [--requires-login ...]
+                                           create-if-needed + push + publish (one verb)
   pull <app_id> [--dir DIR] [--build B]    write views/partials to files
   push <app_id> [--dir DIR] [--build B]    read files, merge into build app_spec
   publish <app_id> [--build B] [--public true|false] [--requires-login true|false]
@@ -133,6 +136,38 @@ def files_to_spec(src, existing_spec):
     return spec
 
 
+def create_app_with_build(name, description="", public=False):
+    """POST /apps alone leaves an app with no build; do the full dance the
+    dashboard does: create app -> create empty build -> point app at it."""
+    res = api("POST", "/apps", {"app_name": name, "description": description, "public": bool(public)})
+    app = res["app"]
+    app_id = app.get("id") or app.get("app_id")
+    build = api("POST", "/builds", {
+        "app_id": int(app_id), "instructions": "", "enabled_tools": [],
+        "disabled_action_names": [], "app_spec": {"views": {}, "partials": {}},
+    }).get("build") or {}
+    build_id = build.get("id") or build.get("build_id")
+    if build_id:
+        api("PATCH", f"/apps/{app_id}", {"build_id": int(build_id)})
+    return {"app_id": int(app_id), "build_id": build_id and int(build_id), "app_name": name}
+
+
+def ensure_build(app_id):
+    """Return the app's editing build id, creating + linking one if missing."""
+    app = api("GET", f"/apps/{app_id}")["app"]
+    if app.get("build_id"):
+        return app["build_id"]
+    build = api("POST", "/builds", {
+        "app_id": int(app_id), "instructions": "", "enabled_tools": [],
+        "disabled_action_names": [], "app_spec": {"views": {}, "partials": {}},
+    }).get("build") or {}
+    build_id = build.get("id") or build.get("build_id")
+    if not build_id:
+        die(f"App {app_id} has no build and creating one failed.")
+    api("PATCH", f"/apps/{app_id}", {"build_id": int(build_id)})
+    return int(build_id)
+
+
 # --- commands --------------------------------------------------------------
 
 def parse_flags(args):
@@ -207,7 +242,8 @@ def main():
 
     elif cmd == "create":
         name = flags.get("name") or die("--name required")
-        out = api("POST", "/apps", {"app_name": name, "description": flags.get("description", "")})
+        out = create_app_with_build(name, flags.get("description", ""),
+                                    as_bool(flags.get("public", CFG.get("defaults", {}).get("public", False))))
 
     elif cmd == "pull":
         app_id = args[0]
@@ -236,7 +272,7 @@ def main():
             manifest = json.loads(mf.read_text())
         build_id = flags.get("build") or manifest.get("build_id")
         if not build_id:
-            build_id, _ = get_default_build_id(app_id)
+            build_id = ensure_build(app_id)
         cur = api("GET", f"/apps/{app_id}/builds/{build_id}")
         b = cur.get("builds") or cur.get("build") or cur
         if isinstance(b, list):
@@ -248,6 +284,40 @@ def main():
         out = api("PATCH", f"/apps/{app_id}/builds/{build_id}", {"app_spec": new_spec})
         out = {"pushed": sorted((new_spec.get("views") or {}).keys()), "build_id": int(build_id),
                "message": out.get("message")}
+
+    elif cmd == "deploy":
+        # One idempotent verb: create app if needed, push the directory, publish.
+        src = Path(flags.get("dir", "."))
+        mf = src / "odapt.json"
+        manifest = json.loads(mf.read_text()) if mf.exists() else {}
+        app_id = (args[0] if args else None) or flags.get("app") or manifest.get("app_id")
+        if not app_id:
+            name = flags.get("name") or src.resolve().name
+            created = create_app_with_build(name, flags.get("description", ""),
+                                            as_bool(flags.get("public", CFG.get("defaults", {}).get("public", False))))
+            app_id = created["app_id"]
+        build_id = manifest.get("build_id") or ensure_build(app_id)
+        cur = api("GET", f"/apps/{app_id}/builds/{build_id}")
+        b = cur.get("builds") or cur.get("build") or cur
+        if isinstance(b, list):
+            b = b[0]
+        spec = b.get("app_spec")
+        if isinstance(spec, str):
+            spec = json.loads(spec)
+        new_spec = files_to_spec(src, spec)
+        api("PATCH", f"/apps/{app_id}/builds/{build_id}", {"app_spec": new_spec})
+        updates = {"deployment_build_id": int(build_id)}
+        defaults = CFG.get("defaults", {})
+        for flag_key, col in (("public", "public"), ("requires_login", "requires_login")):
+            val = flags.get(flag_key, defaults.get(col))
+            if val is not None:
+                updates[col] = as_bool(val)
+        api("PATCH", f"/apps/{app_id}", updates)
+        mf.write_text(json.dumps({"app_id": int(app_id), "build_id": int(build_id),
+                                  "base_url": CFG["base_url"]}, indent=2))
+        out = {"deployed": True, "app_id": int(app_id), "build_id": int(build_id),
+               "views": sorted((new_spec.get("views") or {}).keys()),
+               "url": f"{CFG['base_url']}/app?app_id={app_id}"}
 
     elif cmd == "publish":
         app_id = args[0]
